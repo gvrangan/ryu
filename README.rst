@@ -29,6 +29,17 @@ After writing your application, just type::
 
    % ryu-manager yourapp.py
 
+Testing First application
+========================
+- Create two VM's, one for controller, other for hosts created using ns
+- In the controller VM, install python3 and python3-pip
+- If you are using ubuntu the command you require 
+  % sudo apt install -y python3 python3-pip
+- Then Please clone and install as instructed in Quick Start section.
+- In the hosts VM do  the following, assuming ubuntu VM again
+  % 
+
+
 
 Optional Requirements
 =====================
