@@ -25,7 +25,12 @@ from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_0
 from ryu.lib.mac import haddr_to_bin
 from ryu.lib.packet import packet
+from ryu.lib.packet import arp
 from ryu.lib.packet import ethernet
+from ryu.lib.packet import ipv4
+from ryu.lib.packet import icmp
+from ryu.lib.packet import tcp
+from ryu.lib.packet import udp
 from ryu.lib.packet import ether_types
 
 
@@ -35,6 +40,8 @@ class SimpleSwitch(app_manager.RyuApp):
     def __init__(self, *args, **kwargs):
         super(SimpleSwitch, self).__init__(*args, **kwargs)
         self.mac_to_port = {}
+        self.known_hosts = {}
+        self.arp_attempts = {}
 
     def add_flow(self, datapath, in_port, dst, src, actions):
         ofproto = datapath.ofproto
@@ -50,6 +57,17 @@ class SimpleSwitch(app_manager.RyuApp):
             flags=ofproto.OFPFF_SEND_FLOW_REM, actions=actions)
         datapath.send_msg(mod)
 
+    def add_drop_flow(self, datapath,  src ):
+        ofproto = datapath.ofproto
+
+        match = datapath.ofproto_parser.OFPMatch(dl_src=haddr_to_bin(src))
+
+        mod = datapath.ofproto_parser.OFPFlowMod(
+            datapath=datapath, match=match, cookie=0,
+            command=ofproto.OFPFC_ADD, idle_timeout=0, hard_timeout=0,
+            priority=ofproto.OFP_DEFAULT_PRIORITY)
+        datapath.send_msg(mod)
+
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
         msg = ev.msg
@@ -58,17 +76,54 @@ class SimpleSwitch(app_manager.RyuApp):
 
         pkt = packet.Packet(msg.data)
         eth = pkt.get_protocol(ethernet.ethernet)
+        _ipv4 = pkt.get_protocol(ipv4.ipv4)
+        _icmp = pkt.get_protocol(icmp.icmp)
+        _arp = pkt.get_protocol(arp.arp)
+        _tcp = pkt.get_protocol(tcp.tcp)
+        _udp = pkt.get_protocol(udp.udp)
+
 
         if eth.ethertype == ether_types.ETH_TYPE_LLDP:
             # ignore lldp packet
             return
         dst = eth.dst
         src = eth.src
-
         dpid = datapath.id
         self.mac_to_port.setdefault(dpid, {})
 
         self.logger.info("packet in %s %s %s %s", dpid, src, dst, msg.in_port)
+        if _ipv4:
+           dstip = _ipv4.dst
+           srcip = _ipv4.src
+           self.logger.info("packet in dpid=%s src=%s dst=%s srcMac=%s dstMAc=%s port=%s proto=%s", dpid, srcip, dstip, src, dst, msg.in_port, _ipv4.proto)
+           self.known_hosts[srcip]=src
+           self.known_hosts[dstip]=dst
+
+        if _tcp:
+           self.logger.info("packet in dpid=%s src=%s dst=%s srcMac=%s dstMAc=%s port=%s proto=%s in_tcp_port=%s out_tcp_port=%s", dpid, srcip, dstip, src, dst, msg.in_port, _ipv4.proto, _tcp.src_port, _tcp.dst_port)
+
+        if _udp:
+           self.logger.info("packet in dpid=%s src=%s dst=%s srcMac=%s dstMAc=%s port=%s proto=%s in_udp_port=%s out_udp_port=%s", dpid, srcip, dstip, src, dst, msg.in_port, _ipv4.proto, _udp.src_port, _udp.dst_port)
+
+
+        if _icmp:
+           self.logger.info(_icmp)
+
+        if _arp:
+           self.logger.info(_arp)
+           self.logger.info("known_hosts")
+           self.logger.info(self.known_hosts)
+           if _arp.src_ip in self.known_hosts:
+               if _arp.src_ip in self.arp_attempts and _arp.dst_ip not in self.known_hosts:
+                   if self.arp_attempts[_arp.src_ip] > 4:
+                       self.logger.info("The IP Address %s in port %s of switch dpid %s maybe a ARP attacker",_arp.src_ip,msg.in_port,dpid)
+                       self.add_drop_flow(datapath,src)
+                   self.arp_attempts[_arp.src_ip]=self.arp_attempts[_arp.src_ip]+1
+               else:
+                    self.arp_attempts[_arp.src_ip]=1
+           else:
+               self.logger.info("port %s in switch with dpid %s may be attempting some MAC attack",msg.in_port,dpid)
+
 
         # learn a mac address to avoid FLOOD next time.
         self.mac_to_port[dpid][src] = msg.in_port
